@@ -1,6 +1,10 @@
 const express = require("express");
-const mongoose = require("mongoose");
 const cors = require("cors");
+const mongoose = require("mongoose");
+require("dotenv").config();
+
+const mongoUri = process.env.MONGO_URI || "mongodb://localhost:27017/testing"; // Replace with your MongoDB URI
+
 require("dotenv").config();
 
 const app = express();
@@ -9,28 +13,27 @@ const port = process.env.PORT || 4000;
 // Middleware to parse JSON and URL-encoded data with increased limit
 app.use(express.json({ limit: '50mb' })); // Increase the limit as needed
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+mongoose.connect(mongoUri, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log("MongoDB connected"))
+  .catch((err) => console.error("MongoDB connection error:", err));
 
-
-app.use(cors(allowedOrigins));
+app.use(cors());
 
 // Enable preflight requests for all routes
 app.options('*', cors());
 
-// Connect to MongoDB
-mongoose
-  .connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log("MongoDB connected..."))
-  .catch((err) => console.log(err));
+/// Routes
+// const saveEmailRoute = require("./routes/stats.route");
 
-// Import routes
-const signupRoute = require("./routes/signup.route");
-app.use("/api/signup", signupRoute);
+// app.use("/api/saveemail", saveEmailRoute);
 
 const signinRoute = require("./routes/login.route");
 app.use("/api/login", signinRoute);
 
-const blogpostRoute = require("./routes/blogpost.route");
-app.use("/api/blogpost", blogpostRoute);
+const userInfo = require("./routes/stats.route");
+app.use("/api/stats", userInfo);
+
+
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);

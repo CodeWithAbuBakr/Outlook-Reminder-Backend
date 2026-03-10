@@ -1,36 +1,98 @@
 const express = require("express");
+const axios = require("axios");
 const router = express.Router();
-const SignUp = require("../models/userDataModel");
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
+const MICROSOFT_AUTH_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"; // Replace with your tenant ID
 
-// Route to login user
-router.post("/", async (req, res) => {
-  const { email, password } = req.body;
+// Client credentials (store securely in environment variables)
+const CLIENT_ID = process.env.CLIENT_ID;
+const CLIENT_SECRET = process.env.CLIENT_SECRET;
+const REDIRECT_URI = "https://localhost:3000/assets/redirect.html"; // Must match the one registered in Azure AD
+
+// Route to handle SSO login and token refresh
+router.post('/auth/microsoft', async (req, res) => {
+  const { auth_code } = req.body;
+  if (!auth_code) {
+    return res.status(400).json({ msg: 'Authorization code is missing' });
+  }
 
   try {
-    console.log("Email received:", email); // Log the email received
-    const existingUser = await SignUp.findOne({ email });
-    console.log("Existing user:", existingUser); // Log the result of the query
+    const response = await axios.post(MICROSOFT_AUTH_URL, new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: auth_code,
+      redirect_uri: REDIRECT_URI,
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+      scope: 'user.read mail.send Mail.ReadBasic Mail.Read Mail.ReadWrite offline_access'
 
-    if (!existingUser) {
-      return res.status(400).json({ error: "User not found" });
-    }
+    }), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
 
-   //  const isPasswordMatch =  bcrypt.compare(password, existingUser.password);
-    if (password==existingUser.password) {
-      
-    }else{
-      return res.status(400).json({ error: "Invalid password" });
-    }
+    const tokens = response.data;
+    const access_token = tokens.access_token;
+    const refresh_token = tokens.refresh_token || null;
+    console.log("here are tokens", tokens, access_token, refresh_token)
 
- 
+    // Calculate expiration date (assuming access_token is valid for 1 hour)
+    const expiration_date = new Date(Date.now() + 3600000).toISOString();
 
-    res.status(200).json({ user:existingUser });
-  } catch (err) {
-    console.error("Error in /api/login route:", err);
-    res.status(500).json({ error: err.message });
+    return res.status(200).json({
+      access_token,
+      refresh_token,
+      access_token_expiration: expiration_date
+    });
+  } catch (error) {
+    console.error(`Error: ${error.message}`);
+    return res.status(error.response?.status || 500).json({
+      msg: 'Failed to exchange authorization code',
+      details: error.response?.data || error.message
+    });
   }
 });
+
+router.post('/auth/refresh', async (req, res) => {
+  const { refresh_token } = req.body;
+
+
+  if (!refresh_token) {
+    return res.status(400).json({ msg: 'Refresh token is missing' });
+  }
+
+  try {
+    const response = await axios.post(MICROSOFT_AUTH_URL, new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refresh_token, // Use the refresh_token from request body
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+      scope: 'user.read mail.send Mail.ReadBasic Mail.Read Mail.ReadWrite offline_access'
+    }), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
+
+    const tokens = response.data;
+    const access_token = tokens.access_token;
+    const new_refresh_token = tokens.refresh_token || null; // Avoid naming conflict with request body
+
+    // Calculate expiration date (assuming access_token is valid for 1 hour)
+    const expiration_date = new Date(Date.now() + 3600000).toISOString();
+    console.log("testing")
+    return res.status(200).json({
+      access_token,
+      refresh_token: new_refresh_token, // Return the new refresh token
+      access_token_expiration: expiration_date
+    });
+  } catch (error) {
+    console.error(`Error: ${error.message}`);
+    return res.status(error.response?.status || 500).json({
+      msg: 'Failed to refresh token',
+      details: error.response?.data || error.message
+    });
+  }
+});
+
 
 module.exports = router;
