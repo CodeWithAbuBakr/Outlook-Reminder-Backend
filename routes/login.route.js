@@ -59,38 +59,38 @@ router.post('/auth/microsoft', async (req, res) => {
 router.post('/auth/refresh', async (req, res) => {
   const { refresh_token } = req.body;
 
-
   if (!refresh_token) {
     return res.status(400).json({ msg: 'Refresh token is missing' });
   }
 
   try {
-    const response = await axios.post(MICROSOFT_AUTH_URL, new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: refresh_token, // Use the refresh_token from request body
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
-      scope: 'user.read mail.send Mail.ReadBasic Mail.Read Mail.ReadWrite offline_access'
-    }), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
-      }
-    });
+    const response = await axios.post(
+      MICROSOFT_AUTH_URL,
+      new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refresh_token,
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET
+        // ❌ do NOT include scope here
+      }),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
 
     const tokens = response.data;
     const access_token = tokens.access_token;
-    const new_refresh_token = tokens.refresh_token || null; // Avoid naming conflict with request body
+    const new_refresh_token = tokens.refresh_token || refresh_token; // reuse old if none returned
 
-    // Calculate expiration date (assuming access_token is valid for 1 hour)
-    const expiration_date = new Date(Date.now() + 3600000).toISOString();
-    console.log("testing")
+    // Calculate expiration date (Microsoft usually gives 3600s)
+    const expiration_date = new Date(Date.now() + (tokens.expires_in * 1000)).toISOString();
+
     return res.status(200).json({
       access_token,
-      refresh_token: new_refresh_token, // Return the new refresh token
+      refresh_token: new_refresh_token,
       access_token_expiration: expiration_date
     });
+
   } catch (error) {
-    console.error(`Error: ${error.message}`);
+    console.error(`Refresh token failed:`, error.response?.data || error.message);
     return res.status(error.response?.status || 500).json({
       msg: 'Failed to refresh token',
       details: error.response?.data || error.message
