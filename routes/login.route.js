@@ -10,41 +10,45 @@ const REDIRECT_URI = "https://localhost:3000/assets/redirect.html"; // Must matc
 
 // Route to handle SSO login and token refresh
 router.post('/auth/microsoft', async (req, res) => {
-  const { auth_code } = req.body;
+  const { auth_code, code_verifier } = req.body;
+
   if (!auth_code) {
     return res.status(400).json({ msg: 'Authorization code is missing' });
   }
 
-  try {
-    const response = await axios.post(MICROSOFT_AUTH_URL, new URLSearchParams({
-      grant_type: 'authorization_code',
-      code: auth_code,
-      redirect_uri: REDIRECT_URI,
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
-      scope: 'user.read mail.send Mail.ReadBasic Mail.Read Mail.ReadWrite offline_access'
+  if (!code_verifier) {
+    return res.status(400).json({ msg: 'Code verifier is missing' });
+  }
 
-    }), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
+  try {
+    const response = await axios.post(
+      MICROSOFT_AUTH_URL,
+      new URLSearchParams({
+        grant_type: 'authorization_code',
+        code: auth_code,
+        redirect_uri: REDIRECT_URI,
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET,
+        code_verifier: code_verifier,   // ⭐ REQUIRED FOR PKCE
+        scope: 'User.Read Mail.Send Mail.Read offline_access'
+      }),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
       }
-    });
+    );
 
     const tokens = response.data;
-    const access_token = tokens.access_token;
-    const refresh_token = tokens.refresh_token || null;
-    console.log("here are tokens", tokens, access_token, refresh_token)
-
-    // Calculate expiration date (assuming access_token is valid for 1 hour)
-    const expiration_date = new Date(Date.now() + 3600000).toISOString();
 
     return res.status(200).json({
-      access_token,
-      refresh_token,
-      access_token_expiration: expiration_date
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      expires_in: tokens.expires_in
     });
+
   } catch (error) {
-    console.error(`Error: ${error.message}`);
+    console.error(error.response?.data || error.message);
     return res.status(error.response?.status || 500).json({
       msg: 'Failed to exchange authorization code',
       details: error.response?.data || error.message
