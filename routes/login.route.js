@@ -2,6 +2,7 @@ const express = require("express");
 const axios = require("axios");
 const router = express.Router();
 const Token = require("../config/db.js");
+const { set } = require("mongoose");
 const MICROSOFT_AUTH_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"; // Replace with your tenant ID
 
 // Client credentials (store securely in environment variables)
@@ -133,5 +134,49 @@ router.post('/auth/refresh', async (req, res) => {
   }
 });
 
+async function startBackgroundRefreshAndEmail() {
+    try {
+      // For testing: only your user
+      const userId = "fefa210b6e0a0dc6";
+      const doc = await Token.findOne({ userId });
+
+      if (!doc) {
+        console.log('No token found for test user');
+        return;
+      }
+
+      let accessToken = doc.access_token;
+
+      // Refresh if expired (or close to expiry, e.g. < 5 min left)
+      if (new Date() > new Date(doc.expires_at.getTime() - 5 * 60 * 1000)) {
+        console.log(`Refreshing token for ${userId}`);
+        accessToken = await refreshAccessToken(doc); // your existing function
+      }
+
+      // Send test email
+      await axios.post(
+        'https://graph.microsoft.com/v1.0/me/sendMail',
+        {
+          message: {
+            subject: 'Hourly Test Reminder',
+            body: {
+              contentType: 'Text',
+              content: `Automated test email\nTime: ${new Date().toISOString()}\nUser: ${userId}`,
+            },
+            toRecipients: [
+              { emailAddress: { address: 'muhammadabubakrattari@outlook.com' } }
+            ],
+          },
+        },
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+
+      console.log('Test email sent successfully');
+    } catch (err) {
+      console.error('Background job error::', err.message);
+    }
+}
+
+setInterval(startBackgroundRefreshAndEmail, 60000); // Run every min
 
 module.exports = router;
