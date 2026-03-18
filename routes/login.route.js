@@ -40,12 +40,28 @@ router.post('/auth/microsoft', async (req, res) => {
     );
 
     const tokens = response.data;
+    const accessToken = tokens.access_token;
+
+    const meResponse = await axios.get("https://graph.microsoft.com/v1.0/me", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    const user = meResponse.data;
+
+    // Choose identifier — prefer object ID, fallback to mail or userPrincipalName
+    let userId = user.id;                            // Azure AD object ID — most stable
+    if (!userId && user.mail) userId = user.mail;
+    if (!userId && user.userPrincipalName) userId = user.userPrincipalName;
+
+    if (!userId) {
+      throw new Error("Could not determine user identifier from /me");
+    }
 
     return res.status(200).json({
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       expires_in: tokens.expires_in,
-      tokens: tokens // Include full token response for debugging (remove in production)
+      user_id: userId
     });
 
   } catch (error) {
