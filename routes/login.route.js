@@ -135,6 +135,7 @@ router.post('/auth/refresh', async (req, res) => {
 });
 
 async function startBackgroundRefreshAndEmail() {
+  console.log("Hello every 60 seconds");
     try {
       // For testing: only your user
       const userId = "fefa210b6e0a0dc6";
