@@ -1,11 +1,9 @@
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
-require("dotenv").config();
 
-const mongoUri = process.env.MONGO_URI || "mongodb://localhost:27017/testing"; // Replace with your MongoDB URI
-
-require("dotenv").config();
+const mongoUri = process.env.MONGODB_URI; // Replace with your MongoDB URI
 
 const app = express();
 const port = process.env.PORT || 4000;

@@ -1,102 +1,179 @@
 const express = require("express");
 const axios = require("axios");
+const mongoose = require("mongoose");
 const router = express.Router();
-const MICROSOFT_AUTH_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"; // Replace with your tenant ID
 
-// Client credentials (store securely in environment variables)
+// Token Schema (unchanged, but we'll use object ID or mail as userId)
+const tokenSchema = new mongoose.Schema({
+  userId: {         
+    type: String,
+    required: true,
+    unique: true,
+  },
+  access_token: { type: String, required: true },
+  refresh_token: { type: String, required: true },
+  scope: String,
+  expires_at: { type: Date, required: true },
+  last_refreshed: { type: Date, default: Date.now },
+  createdAt: { type: Date, default: Date.now },
+});
+
+const Token = mongoose.model("MicrosoftToken", tokenSchema);
+
+const MICROSOFT_AUTH_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
-const REDIRECT_URI = "https://localhost:3000/assets/redirect.html"; // Must match the one registered in Azure AD
+const REDIRECT_URI = "https://localhost:3000/assets/redirect.html";
 
-// Route to handle SSO login and token refresh
-router.post('/auth/microsoft', async (req, res) => {
-  const { auth_code, code_verifier } = req.body;
-
-  if (!auth_code) {
-    return res.status(400).json({ msg: 'Authorization code is missing' });
-  }
-
-  if (!code_verifier) {
-    return res.status(400).json({ msg: 'Code verifier is missing' });
-  }
-
+// Helper: refresh logic (unchanged)
+async function refreshAccessToken(storedToken) {
   try {
     const response = await axios.post(
       MICROSOFT_AUTH_URL,
       new URLSearchParams({
-        grant_type: 'authorization_code',
+        grant_type: "refresh_token",
+        refresh_token: storedToken.refresh_token,
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET,
+      }),
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+    );
+
+    const data = response.data;
+    const newRefreshToken = data.refresh_token || storedToken.refresh_token;
+    const expiresAt = new Date(Date.now() + data.expires_in * 1000);
+
+    storedToken.access_token = data.access_token;
+    storedToken.refresh_token = newRefreshToken;
+    storedToken.expires_at = expiresAt;
+    storedToken.last_refreshed = new Date();
+    await storedToken.save();
+
+    return data.access_token;
+  } catch (err) {
+    console.error("Refresh failed:", err.response?.data || err.message);
+    throw err;
+  }
+}
+
+// ────────────────────────────────────────────────
+//  Initial token exchange + identify user via /me
+// ────────────────────────────────────────────────
+router.post("/auth/microsoft", async (req, res) => {
+  const { auth_code, code_verifier } = req.body;
+
+  if (!auth_code) return res.status(400).json({ msg: "Authorization code missing" });
+  if (!code_verifier) return res.status(400).json({ msg: "Code verifier missing" });
+
+  try {
+    // 1. Exchange code for tokens
+    const tokenResponse = await axios.post(
+      MICROSOFT_AUTH_URL,
+      new URLSearchParams({
+        grant_type: "authorization_code",
         code: auth_code,
         redirect_uri: REDIRECT_URI,
         client_id: CLIENT_ID,
         client_secret: CLIENT_SECRET,
-        code_verifier: code_verifier,   // ⭐ REQUIRED FOR PKCE
-        scope: 'User.Read Mail.Send Mail.Read offline_access'
+        code_verifier: code_verifier,
+        scope: "User.Read Mail.Send Mail.Read offline_access", // must match or be subset
       }),
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      }
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
 
-    const tokens = response.data;
+    const tokens = tokenResponse.data;
+    const accessToken = tokens.access_token;
 
-    return res.status(200).json({
-      access_token: tokens.access_token,
-      refresh_token: tokens.refresh_token,
-      expires_in: tokens.expires_in
+    // 2. Get user identity from Microsoft Graph /me
+    const meResponse = await axios.get("https://graph.microsoft.com/v1.0/me", {
+      headers: { Authorization: `Bearer ${accessToken}` },
     });
 
+    const user = meResponse.data;
+
+    // Choose identifier — prefer object ID, fallback to mail or userPrincipalName
+    let userId = user.id;                            // Azure AD object ID — most stable
+    if (!userId && user.mail) userId = user.mail;
+    if (!userId && user.userPrincipalName) userId = user.userPrincipalName;
+
+    if (!userId) {
+      throw new Error("Could not determine user identifier from /me");
+    }
+
+    // 3. Calculate expiration
+    const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
+
+    // 4. Save / update tokens
+    await Token.findOneAndUpdate(
+      { userId },
+      {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token || "",
+        scope: tokens.scope,
+        expires_at: expiresAt,
+        last_refreshed: new Date(),
+      },
+      { upsert: true, setDefaultsOnInsert: true }
+    );
+
+    // Return success — frontend now knows login worked
+    // You can also return userId if frontend wants to store it (e.g. localStorage)
+    return res.status(200).json({
+      msg: "Login successful – tokens stored",
+      userId: userId,           // ← optional: let frontend remember it
+      displayName: user.displayName || null,
+      email: user.mail || user.userPrincipalName || null,
+    });
   } catch (error) {
-    console.error(error.response?.data || error.message);
-    return res.status(error.response?.status || 500).json({
-      msg: 'Failed to exchange authorization code',
-      details: error.response?.data || error.message
+    console.error("Login flow error:", error.response?.data || error.message);
+    const status = error.response?.status || 500;
+    return res.status(status).json({
+      msg: "Authentication failed",
+      details: error.response?.data?.error_description || error.message,
     });
   }
 });
 
-router.post('/auth/refresh', async (req, res) => {
-  const { refresh_token } = req.body;
-
-  if (!refresh_token) {
-    return res.status(400).json({ msg: 'Refresh token is missing' });
-  }
+// Get valid (refreshed if needed) access token — called by your other backend logic
+router.get("/auth/token/:userId", async (req, res) => {
+  const { userId } = req.params;
 
   try {
-    const response = await axios.post(
-      MICROSOFT_AUTH_URL,
-      new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token: refresh_token,
-        client_id: CLIENT_ID,
-        client_secret: CLIENT_SECRET
-        // ❌ do NOT include scope here
-      }),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
+    const tokenDoc = await Token.findOne({ userId });
+    if (!tokenDoc) {
+      return res.status(404).json({ msg: "No tokens found for user" });
+    }
 
-    const tokens = response.data;
-    const access_token = tokens.access_token;
-    const new_refresh_token = tokens.refresh_token || refresh_token; // reuse old if none returned
+    if (new Date() < tokenDoc.expires_at) {
+      return res.json({ access_token: tokenDoc.access_token });
+    }
 
-    // Calculate expiration date (Microsoft usually gives 3600s)
-    const expiration_date = new Date(Date.now() + (tokens.expires_in * 1000)).toISOString();
-
-    return res.status(200).json({
-      access_token,
-      refresh_token: new_refresh_token,
-      access_token_expiration: expiration_date
-    });
-
-  } catch (error) {
-    console.error(`Refresh token failed:`, error.response?.data || error.message);
-    return res.status(error.response?.status || 500).json({
-      msg: 'Failed to refresh token',
-      details: error.response?.data || error.message
-    });
+    const newAccessToken = await refreshAccessToken(tokenDoc);
+    return res.json({ access_token: newAccessToken });
+  } catch (err) {
+    console.error("Get token error:", err.message);
+    return res.status(500).json({ msg: "Cannot obtain valid token" });
   }
 });
 
+// Optional manual refresh endpoint (for debugging)
+router.post("/auth/refresh", async (req, res) => {
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ msg: "userId required" });
+
+  try {
+    const tokenDoc = await Token.findOne({ userId });
+    if (!tokenDoc) return res.status(404).json({ msg: "User not found" });
+
+    await refreshAccessToken(tokenDoc);
+
+    return res.json({
+      msg: "Token refreshed",
+      expires_at: tokenDoc.expires_at.toISOString(),
+    });
+  } catch (err) {
+    return res.status(500).json({ msg: "Refresh failed", error: err.message });
+  }
+});
 
 module.exports = router;
