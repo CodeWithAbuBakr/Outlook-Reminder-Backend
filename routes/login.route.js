@@ -1,6 +1,7 @@
 const express = require("express");
 const axios = require("axios");
 const router = express.Router();
+const Token = require("../config/db.js");
 const MICROSOFT_AUTH_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"; // Replace with your tenant ID
 
 // Client credentials (store securely in environment variables)
@@ -57,11 +58,28 @@ router.post('/auth/microsoft', async (req, res) => {
       throw new Error("Could not determine user identifier from /me");
     }
 
+    const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);
+
+    // 4. Save / update tokens
+    await Token.findOneAndUpdate(
+      { userId },
+      {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token || "",
+        scope: tokens.scope,
+        expires_at: expiresAt,
+        last_refreshed: new Date(),
+      },
+      { upsert: true, setDefaultsOnInsert: true }
+    );
+
+    // Return success — frontend now knows login worked
+    // You can also return userId if frontend wants to store it (e.g. localStorage)
     return res.status(200).json({
-      access_token: tokens.access_token,
-      refresh_token: tokens.refresh_token,
-      expires_in: tokens.expires_in,
-      user_id: userId
+      msg: "Login successful – tokens stored",
+      userId: userId,           // ← optional: let frontend remember it
+      displayName: user.displayName || null,
+      email: user.mail || user.userPrincipalName || null,
     });
 
   } catch (error) {
